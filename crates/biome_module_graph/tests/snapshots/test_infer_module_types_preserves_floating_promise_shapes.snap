@@ -164,18 +164,21 @@ Expression "[1, 2, 3]" => [number: 1,
 number: 2,
 number: 3]
 
-Expression "[1, 2, 3].map" => sync Function "Array.prototype.map" {
+Expression "[1, 2, 3].map" => sync Function "map" {
   accepts: {
     params: [
-      : sync Function "<U>(item: T) => U" {
+      required callbackfn: sync Function {
         accepts: {
           params: [
-            : U
+            required value: number: 1 | number: 2 | number: 3
+            required index: number
+            required array: instanceof Array<number: 1 | number: 2 | number: 3>
           ]
           type_args: []
         }
         returns: U
       }
+      optional thisArg: any
     ]
     type_args: [U]
   }
@@ -200,9 +203,9 @@ Expression "async (value) => value + 1" => async Function {
   returns: instanceof Promise<unknown>
 }
 
-Binding value "value" => U
+Binding value "value" => number: 1 | number: 2 | number: 3
 
-Expression "value" => U
+Expression "value" => number: 1 | number: 2 | number: 3
 
 Expression "value + 1" => unknown
 
@@ -214,18 +217,21 @@ Expression "[1, 2, 3]" => [number: 1,
 number: 2,
 number: 3]
 
-Expression "[1, 2, 3].map" => sync Function "Array.prototype.map" {
+Expression "[1, 2, 3].map" => sync Function "map" {
   accepts: {
     params: [
-      : sync Function "<U>(item: T) => U" {
+      required callbackfn: sync Function {
         accepts: {
           params: [
-            : U
+            required value: number: 1 | number: 2 | number: 3
+            required index: number
+            required array: instanceof Array<number: 1 | number: 2 | number: 3>
           ]
           type_args: []
         }
         returns: U
       }
+      optional thisArg: any
     ]
     type_args: [U]
   }
@@ -250,7 +256,7 @@ Expression "(value) => Promise.resolve(value + 1)" => sync Function {
   returns: instanceof Promise<unknown>
 }
 
-Binding value "value" => U
+Binding value "value" => number: 1 | number: 2 | number: 3
 
 Expression "Promise" => class "Promise" {
   extends: none
@@ -270,7 +276,7 @@ Expression "Promise.resolve" => sync Function "resolve" {
 
 Expression "Promise.resolve(value + 1)" => instanceof Promise<unknown>
 
-Expression "value" => U
+Expression "value" => number: 1 | number: 2 | number: 3
 
 Expression "value + 1" => unknown
 
