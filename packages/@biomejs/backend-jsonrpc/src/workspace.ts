@@ -2958,6 +2958,11 @@ export interface Nursery {
 	 */
 	noArgumentsCallerOrCallee?: NoArgumentsCallerOrCalleeConfiguration;
 	/**
+	 * Disallow calling array methods on the arguments object.
+	 * See https://biomejs.dev/linter/rules/no-array-methods-on-arguments
+	 */
+	noArrayMethodsOnArguments?: NoArrayMethodsOnArgumentsConfiguration;
+	/**
 	 * Disallow sorting an array only to read its smallest or largest value.
 	 * See https://biomejs.dev/linter/rules/no-array-sort-for-min-max
 	 */
@@ -6304,6 +6309,9 @@ export type NoAccidentalBitwiseOperatorsConfiguration =
 export type NoArgumentsCallerOrCalleeConfiguration =
 	| RulePlainConfiguration
 	| RuleWithNoArgumentsCallerOrCalleeOptions;
+export type NoArrayMethodsOnArgumentsConfiguration =
+	| RulePlainConfiguration
+	| RuleWithNoArrayMethodsOnArgumentsOptions;
 export type NoArraySortForMinMaxConfiguration =
 	| RulePlainConfiguration
 	| RuleWithNoArraySortForMinMaxOptions;
@@ -9104,6 +9112,10 @@ export interface RuleWithNoAccidentalBitwiseOperatorsOptions {
 export interface RuleWithNoArgumentsCallerOrCalleeOptions {
 	level: RulePlainConfiguration;
 	options?: NoArgumentsCallerOrCalleeOptions;
+}
+export interface RuleWithNoArrayMethodsOnArgumentsOptions {
+	level: RulePlainConfiguration;
+	options?: NoArrayMethodsOnArgumentsOptions;
 }
 export interface RuleWithNoArraySortForMinMaxOptions {
 	/**
@@ -12326,6 +12338,7 @@ export type UseVueValidVTextOptions = {};
 export type UseYieldOptions = {};
 export type NoAccidentalBitwiseOperatorsOptions = {};
 export type NoArgumentsCallerOrCalleeOptions = {};
+export type NoArrayMethodsOnArgumentsOptions = {};
 export type NoArraySortForMinMaxOptions = {};
 export type NoAstroConflictingSetDirectivesOptions = {};
 export type NoAstroSetHtmlDirectiveOptions = {};
@@ -14378,6 +14391,7 @@ export type Category =
 	| "lint/correctness/useYield"
 	| "lint/nursery/noAccidentalBitwiseOperators"
 	| "lint/nursery/noArgumentsCallerOrCallee"
+	| "lint/nursery/noArrayMethodsOnArguments"
 	| "lint/nursery/noArraySortForMinMax"
 	| "lint/nursery/noAstroConflictingSetDirectives"
 	| "lint/nursery/noAstroSetHtmlDirective"
@@ -14385,15 +14399,15 @@ export type Category =
 	| "lint/nursery/noBooleanSortComparator"
 	| "lint/nursery/noBunModules"
 	| "lint/nursery/noColorInvalidHex"
-	| "lint/nursery/noDanglingUnderscore"
-	| "lint/nursery/noConsoleSpaces"
-	| "lint/nursery/noDuplicateMapKeys"
 	| "lint/nursery/noComponentHookFactories"
 	| "lint/nursery/noConditionalExpect"
+	| "lint/nursery/noConsoleSpaces"
+	| "lint/nursery/noDanglingUnderscore"
 	| "lint/nursery/noDoubleComparison"
 	| "lint/nursery/noDrizzleDeleteWithoutWhere"
 	| "lint/nursery/noDrizzleUpdateWithoutWhere"
 	| "lint/nursery/noDuplicateFieldDefinitionNames"
+	| "lint/nursery/noDuplicateMapKeys"
 	| "lint/nursery/noDuplicateSelectors"
 	| "lint/nursery/noDynamicDelete"
 	| "lint/nursery/noEagerArrayMethodsInLoops"
@@ -14509,22 +14523,22 @@ export type Category =
 	| "lint/nursery/noVueDeprecatedScopedSlots"
 	| "lint/nursery/noVueDeprecatedSlotAttribute"
 	| "lint/nursery/noVueDeprecatedSlotScope"
+	| "lint/nursery/noVueDeprecatedVBindSync"
 	| "lint/nursery/noVueDeprecatedVOnNativeModifier"
 	| "lint/nursery/noVueExcessiveProps"
+	| "lint/nursery/noVueImportCompilerMacros"
 	| "lint/nursery/noVueLifecycleAfterAwait"
 	| "lint/nursery/noVueLoneTemplate"
 	| "lint/nursery/noVueMixin"
 	| "lint/nursery/noVueMultipleObjectsInClass"
 	| "lint/nursery/noVueMultipleSlotArgs"
 	| "lint/nursery/noVueMutatingProps"
-	| "lint/nursery/noVueRestrictedCallAfterAwait"
-	| "lint/nursery/noVueDeprecatedVBindSync"
-	| "lint/nursery/noVueRootVIf"
-	| "lint/nursery/noVueImportCompilerMacros"
 	| "lint/nursery/noVueRefAsOperand"
 	| "lint/nursery/noVueRefObjectReactivityLoss"
 	| "lint/nursery/noVueRequiredPropWithDefault"
+	| "lint/nursery/noVueRestrictedCallAfterAwait"
 	| "lint/nursery/noVueRestrictedVOn"
+	| "lint/nursery/noVueRootVIf"
 	| "lint/nursery/noVueShadowNativeEvents"
 	| "lint/nursery/noVueSideEffectsInComputed"
 	| "lint/nursery/noVueTemplateKey"
@@ -14635,9 +14649,9 @@ export type Category =
 	| "lint/nursery/useVueConsistentDefinePropsDeclaration"
 	| "lint/nursery/useVueConsistentEventHyphenation"
 	| "lint/nursery/useVueConsistentVForDelimiter"
-	| "lint/nursery/useVueDefinePropsDestructuring"
-	| "lint/nursery/useVueDefineOptions"
 	| "lint/nursery/useVueDefaultProp"
+	| "lint/nursery/useVueDefineOptions"
+	| "lint/nursery/useVueDefinePropsDestructuring"
 	| "lint/nursery/useVueEmitValidator"
 	| "lint/nursery/useVueEmitsValidatorReturn"
 	| "lint/nursery/useVueMatchingComponentFileName"
@@ -14645,28 +14659,28 @@ export type Category =
 	| "lint/nursery/useVuePropTypeConstructor"
 	| "lint/nursery/useVueRenderReturn"
 	| "lint/nursery/useVueSingleEventPayload"
+	| "lint/nursery/useVueSlotNameCasing"
 	| "lint/nursery/useVueSlotsAsFunctions"
 	| "lint/nursery/useVueTemplateRef"
-	| "lint/nursery/useVueSlotNameCasing"
 	| "lint/nursery/useVueToggleInsideTransition"
 	| "lint/nursery/useVueTypedObjectProps"
 	| "lint/nursery/useVueTypedProps"
 	| "lint/nursery/useVueTypedRef"
+	| "lint/nursery/useVueVModel"
+	| "lint/nursery/useVueVOnExact"
 	| "lint/nursery/useVueValidAttributeName"
 	| "lint/nursery/useVueValidDefaultProp"
 	| "lint/nursery/useVueValidDefineEmits"
 	| "lint/nursery/useVueValidDefineOptions"
 	| "lint/nursery/useVueValidDefineProps"
 	| "lint/nursery/useVueValidNextTick"
-	| "lint/nursery/useVueVOnExact"
 	| "lint/nursery/useVueValidVFor"
 	| "lint/nursery/useVueValidVIs"
 	| "lint/nursery/useVueValidVMemo"
 	| "lint/nursery/useVueValidVModel"
-	| "lint/nursery/useVueVModel"
-	| "lint/nursery/useWhileLoopCondition"
 	| "lint/nursery/useVueValidVShow"
 	| "lint/nursery/useVueValidVSlot"
+	| "lint/nursery/useWhileLoopCondition"
 	| "lint/performance/noAccumulatingSpread"
 	| "lint/performance/noAwaitInLoops"
 	| "lint/performance/noBarrelFile"
