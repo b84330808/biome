@@ -25,26 +25,33 @@
 //!
 //! The model already folds the different ways Vue lets a declaration be
 //! written into one shape, so a rule never matches on syntax to find them.
+//! When a rule needs the syntax anyway, to build a fix or to read what the
+//! model does not describe, [`VueNodes::node`] returns the node a row of the
+//! model stands for in constant time.
 //!
 //! A query for another kind of declaration is one `define_vue_query!` call
 //! and one loop in [`VueSemanticVisitor`]. References have their own visitors,
 //! [`VueReferenceVisitor`] and [`VueEventVisitor`], so that files analyzed
 //! without a rule that asks for them don't pay for matching every reference.
 
-use crate::services::semantic::{SemanticModelBuilderVisitor, SemanticServices};
+use crate::services::semantic::SemanticModelBuilderVisitor;
 use biome_analyze::{
-    AddVisitor, FromServices, Phase, Phases, QueryKey, QueryMatch, Queryable, RuleKey,
-    RuleMetadata, ServiceBag, ServicesDiagnostic, SyntaxVisitor, Visitor, VisitorContext,
+    AddVisitor, AnalyzedTree, FromServices, Phase, Phases, QueryKey, QueryMatch, Queryable,
+    RuleKey, RuleMetadata, ServiceBag, ServicesDiagnostic, SyntaxVisitor, Visitor, VisitorContext,
     VisitorStartContext,
 };
 use biome_js_semantic::SemanticModel;
-use biome_js_syntax::{AnyJsRoot, JsLanguage, JsSyntaxNode, TextRange};
+use biome_js_syntax::{
+    AnyJsRoot, JsLanguage, JsPropertyObjectMember, JsShorthandPropertyObjectMember,
+    JsStringLiteralExpression, JsSyntaxNode, TextRange, TsMethodSignatureTypeMember,
+    TsPropertySignatureTypeMember,
+};
 use biome_languages::{JsFileSource, LanguageDb};
 use biome_parser::db::AnalyzedSource;
-use biome_rowan::{AstNode, NodeOrToken, WalkEvent};
+use biome_rowan::{AstNode, WalkEvent, declare_node_union};
 use biome_vue_semantic::{
-    Component, Emit, Prop, RefSite, Reference, Snippet, SnippetId, Symbol, VueSemanticModel,
-    component_model, vue_model_from_source,
+    Component, Computed, Emit, JsNodeId, Method, Nodes, Prop, PropDefault, RefSite, Reference,
+    Snippet, SnippetId, Symbol, VueSemanticModel, component_model, vue_model_from_source,
 };
 use std::rc::Rc;
 
@@ -55,6 +62,7 @@ pub struct VueSemanticService {
     model: VueSemanticModel,
     /// `None` when the analyzed tree is a whole JavaScript file.
     snippet: Option<SnippetId>,
+    nodes: VueNodes,
 }
 
 impl VueSemanticService {
@@ -64,7 +72,8 @@ impl VueSemanticService {
     /// stored one. A fix pass analyzes a tree the database does not hold; its
     /// ranges would not match a stored model, so the model is then built from
     /// the tree alone and describes its components without their template.
-    fn from_services(root: &AnyJsRoot, services: &ServiceBag) -> Self {
+    fn from_services(tree: AnalyzedTree<'_, JsLanguage>, services: &ServiceBag) -> Self {
+        let root = tree.root();
         let stored = services
             .get_service::<Rc<dyn LanguageDb>>()
             .zip(services.get_service::<AnalyzedSource>())
@@ -75,19 +84,17 @@ impl VueSemanticService {
                     return None;
                 }
                 match source {
-                    AnalyzedSource::Source(file) => Some(Self {
-                        model: vue_model_from_source(db, *file).clone(),
-                        snippet: None,
-                    }),
+                    AnalyzedSource::Source(file) => Some(Self::new(
+                        vue_model_from_source(db, *file).clone(),
+                        None,
+                        tree,
+                    )),
                     AnalyzedSource::Snippet(snippet) => {
                         // Use the host document of the snippet: the document
                         // of its path can be the one of another client.
                         let model = vue_model_from_source(db, snippet.source()).clone();
                         let snippet = model.snippet_at_offset(snippet.content_offset())?.id();
-                        Some(Self {
-                            model,
-                            snippet: Some(snippet),
-                        })
+                        Some(Self::new(model, Some(snippet), tree))
                     }
                 }
             });
@@ -100,11 +107,23 @@ impl VueSemanticService {
                 Some(js) => component_model(root, js, source_type),
                 None => VueSemanticModel::default(),
             };
-            Self {
-                model,
-                snippet: None,
-            }
+            Self::new(model, None, tree)
         })
+    }
+
+    fn new(
+        model: VueSemanticModel,
+        snippet: Option<SnippetId>,
+        tree: AnalyzedTree<'_, JsLanguage>,
+    ) -> Self {
+        let nodes = VueNodes {
+            nodes: Rc::new(model.js_nodes(tree, snippet)),
+        };
+        Self {
+            model,
+            snippet,
+            nodes,
+        }
     }
 
     /// The model of the whole file, including the script blocks of a
@@ -122,7 +141,7 @@ impl VueSemanticService {
     /// already did.
     fn insert_into(ctx: &mut VisitorStartContext<JsLanguage>) {
         if ctx.services.get_service::<Self>().is_none() {
-            let service = Self::from_services(ctx.root, ctx.services);
+            let service = Self::from_services(ctx.tree(), ctx.services);
             ctx.services.insert_service(service);
         }
     }
@@ -249,7 +268,7 @@ macro_rules! define_vue_query {
             type Input = $input;
             type Output = $output;
             type Language = JsLanguage;
-            type Services = SemanticServices;
+            type Services = VueSemanticServices;
 
             fn build_visitor(analyzer: &mut impl AddVisitor<JsLanguage>, _: &AnyJsRoot) {
                 analyzer.add_visitor(Phases::Syntax, || SemanticModelBuilderVisitor);
@@ -298,9 +317,9 @@ define_vue_query!(
     VueReferenceVisitor
 );
 
-/// The services of a rule that queries [`VueSemantic`]: the JavaScript
-/// semantic model of the analyzed tree, and the Vue semantic model of the
-/// file it belongs to.
+/// The services of the rules that query the Vue semantic model: the
+/// JavaScript semantic model of the analyzed tree, and the Vue semantic model
+/// of the file it belongs to.
 pub struct VueSemanticServices {
     model: SemanticModel,
     vue: VueSemanticService,
@@ -326,6 +345,12 @@ impl VueSemanticServices {
     /// when the model of its file is not available.
     pub fn snippet(&self) -> Option<Snippet> {
         self.vue.snippet.map(|id| self.vue.model.snippet(id))
+    }
+
+    /// The syntax nodes of the analyzed tree that rows of the Vue model stand
+    /// for.
+    pub fn vue_nodes(&self) -> &VueNodes {
+        &self.vue.nodes
     }
 }
 
@@ -419,20 +444,137 @@ impl VueEventSite {
     }
 }
 
-/// Returns the node of type `N` whose range in `root` is exactly `range`.
-pub(crate) fn node_at_range<N: AstNode<Language = JsLanguage>>(
-    root: &AnyJsRoot,
-    range: TextRange,
-) -> Option<N> {
-    let root = root.syntax();
-    if !root.text_range_with_trivia().contains_range(range) {
-        return None;
+/// The syntax nodes of the analyzed tree that rows of the Vue model stand
+/// for, indexed by [`JsNodeId`].
+///
+/// The table is filled once, when the analyzer starts on the tree, so finding
+/// a node is an index into it. Rows written in another tree, such as another
+/// script block of the same single-file component, have no node here.
+#[derive(Clone, Debug)]
+pub struct VueNodes {
+    nodes: Rc<Nodes<JsLanguage>>,
+}
+
+impl VueNodes {
+    /// Returns the node `row` stands for, or `None` when `row` is not written
+    /// in the analyzed tree.
+    pub fn node<R: VueRow>(&self, row: &R) -> Option<R::Node> {
+        R::cast(self.nodes.get(row.js_node()?)?.clone())
     }
-    let node = match root.covering_element(range) {
-        NodeOrToken::Node(node) => node,
-        NodeOrToken::Token(token) => token.parent()?,
+}
+
+/// A row of the Vue model that stands for a JavaScript syntax node.
+pub trait VueRow {
+    type Node;
+
+    /// The id of the node, or `None` when the row is not written in
+    /// JavaScript.
+    fn js_node(&self) -> Option<JsNodeId>;
+
+    /// Converts the node of the row to [`Self::Node`].
+    fn cast(node: JsSyntaxNode) -> Option<Self::Node>;
+}
+
+/// An id the model gives for a node, such as [`Computed::getter_node`].
+///
+/// [`Computed::getter_node`]: biome_vue_semantic::Computed::getter_node
+impl VueRow for JsNodeId {
+    type Node = JsSyntaxNode;
+
+    fn js_node(&self) -> Option<JsNodeId> {
+        Some(*self)
+    }
+
+    fn cast(node: JsSyntaxNode) -> Option<Self::Node> {
+        Some(node)
+    }
+}
+
+/// The node of a declaration is the one [`Symbol::declaration_range`] covers.
+impl VueRow for Symbol {
+    type Node = JsSyntaxNode;
+
+    fn js_node(&self) -> Option<JsNodeId> {
+        Self::js_node(self)
+    }
+
+    fn cast(node: JsSyntaxNode) -> Option<Self::Node> {
+        Some(node)
+    }
+}
+
+/// The node of a component is the one [`Component::range`] covers.
+impl VueRow for Component {
+    type Node = JsSyntaxNode;
+
+    fn js_node(&self) -> Option<JsNodeId> {
+        Some(Self::js_node(self))
+    }
+
+    fn cast(node: JsSyntaxNode) -> Option<Self::Node> {
+        Some(node)
+    }
+}
+
+/// Implements [`VueRow`] for a kind of declaration whose node has no type of
+/// its own: the node is the one [`Symbol::declaration_range`] covers.
+macro_rules! impl_vue_row_for_declaration {
+    ($($declaration:ty),*) => {
+        $(
+            impl VueRow for $declaration {
+                type Node = JsSyntaxNode;
+
+                fn js_node(&self) -> Option<JsNodeId> {
+                    Symbol::js_node(self)
+                }
+
+                fn cast(node: JsSyntaxNode) -> Option<Self::Node> {
+                    Some(node)
+                }
+            }
+        )*
     };
-    node.ancestors()
-        .filter(|node| node.text_trimmed_range() == range)
-        .find_map(N::cast)
+}
+
+impl_vue_row_for_declaration!(Emit, Method, Computed);
+
+impl VueRow for Prop {
+    type Node = AnyVuePropNode;
+
+    fn js_node(&self) -> Option<JsNodeId> {
+        Symbol::js_node(self)
+    }
+
+    fn cast(node: JsSyntaxNode) -> Option<Self::Node> {
+        AnyVuePropNode::cast(node)
+    }
+}
+
+/// The node of a default value is the one [`PropDefault::range`] covers.
+impl VueRow for PropDefault {
+    type Node = JsSyntaxNode;
+
+    fn js_node(&self) -> Option<JsNodeId> {
+        Some(Self::js_node(self))
+    }
+
+    fn cast(node: JsSyntaxNode) -> Option<Self::Node> {
+        Some(node)
+    }
+}
+
+declare_node_union! {
+    /// The declaration of a prop, in each syntax Vue accepts:
+    ///
+    /// - `props: ['name']` declares it with a string.
+    /// - `props: { name: String }` declares it with a property.
+    /// - `props: { name }` declares it with a shorthand property.
+    /// - `defineProps<{ name: string }>()` declares it with a property or
+    ///   method signature.
+    pub AnyVuePropNode =
+        JsStringLiteralExpression
+        | JsPropertyObjectMember
+        | JsShorthandPropertyObjectMember
+        | TsPropertySignatureTypeMember
+        | TsMethodSignatureTypeMember
 }

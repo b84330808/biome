@@ -1,4 +1,4 @@
-use crate::services::vue::VueComponent;
+use crate::services::vue::{VueComponent, VueNodes};
 use biome_analyze::{
     Rule, RuleDiagnostic, RuleDomain, RuleSource, context::RuleContext, declare_lint_rule,
 };
@@ -82,7 +82,9 @@ impl Rule for NoVueThisInBeforeRouteEnter {
     type Options = NoVueThisInBeforeRouteEnterOptions;
 
     fn run(ctx: &RuleContext<Self>) -> Self::Signals {
-        let Some(options) = options_object(&ctx.root(), ctx.query(), ctx.model()) else {
+        let Some(options) =
+            options_object(&ctx.root(), ctx.query(), ctx.vue_nodes(), ctx.model())
+        else {
             return Box::default();
         };
         let mut ranges = Vec::new();
@@ -125,22 +127,17 @@ impl Rule for NoVueThisInBeforeRouteEnter {
 
 /// Returns the options object that defines `component`.
 ///
-/// The Vue semantic model records only the range of the definition, so the
-/// node is found again in `root`. Returns `None` when the options aren't an
-/// object literal.
+/// Returns `None` when the options aren't an object literal.
 fn options_object(
     root: &AnyJsRoot,
     component: &Component,
+    nodes: &VueNodes,
     model: &SemanticModel,
 ) -> Option<JsObjectExpression> {
     let options = if component.kind() == ComponentKind::Setup {
         define_options_argument(root, model)?
     } else {
-        let definition = root
-            .syntax()
-            .covering_element(component.range())
-            .into_node()
-            .and_then(AnyJsExpression::cast)?;
+        let definition = AnyJsExpression::cast(nodes.node(component)?)?;
         match component.kind() {
             ComponentKind::OptionsObject => definition,
             kind => {

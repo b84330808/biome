@@ -5,6 +5,9 @@
 //! template resolve to declarations, so a rule that needs more than the HTML
 //! syntax of the template asks the model instead of parsing attribute values.
 //!
+//! When a rule needs the syntax of an element or attribute the model
+//! describes, [`VueNodes::node`] returns its node in constant time.
+//!
 //! The model is built from the file stored in the language database, because
 //! the database also holds the parsed scripts and template expressions. It is
 //! empty when no stored tree matches the analyzed one: in a file that isn't a
@@ -16,21 +19,32 @@ use biome_analyze::{
     ServiceBag, ServicesDiagnostic, SyntaxVisitor, Visitor, VisitorContext, VisitorStartContext,
 };
 use biome_db::Source;
-use biome_html_syntax::{HtmlLanguage, HtmlRoot, HtmlSyntaxNode};
+use biome_html_syntax::{
+    AnyHtmlAttribute, HtmlElement, HtmlLanguage, HtmlRoot, HtmlSelfClosingElement, HtmlSyntaxNode,
+};
 use biome_languages::{HtmlFileSource, LanguageDb};
 use biome_parser::db::SourceExt;
-use biome_rowan::{AstNode, SyntaxKindSet, WalkEvent};
-use biome_vue_semantic::{VueSemanticModel, vue_model_from_source};
+use biome_rowan::{AstNode, SyntaxKindSet, WalkEvent, declare_node_union};
+use biome_vue_semantic::{
+    Attr, Element, HtmlNodeId, Nodes, VueSemanticModel, vue_model_from_source,
+};
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
 pub struct VueSemanticServices {
     model: VueSemanticModel,
+    nodes: VueNodes,
 }
 
 impl VueSemanticServices {
     pub fn model(&self) -> &VueSemanticModel {
         &self.model
+    }
+
+    /// The syntax nodes of the analyzed document that rows of the model
+    /// stand for.
+    pub fn vue_nodes(&self) -> &VueNodes {
+        &self.nodes
     }
 }
 
@@ -43,8 +57,12 @@ impl FromServices for VueSemanticServices {
         let model: &VueSemanticModel = services
             .get_service()
             .ok_or_else(|| ServicesDiagnostic::new(rule_key.rule_name(), &["VueSemanticModel"]))?;
+        let nodes: &VueNodes = services
+            .get_service()
+            .ok_or_else(|| ServicesDiagnostic::new(rule_key.rule_name(), &["VueNodes"]))?;
         Ok(Self {
             model: model.clone(),
+            nodes: nodes.clone(),
         })
     }
 }
@@ -83,8 +101,9 @@ where
     }
 }
 
-/// Inserts the [`VueSemanticModel`] of the analyzed file into the service
-/// bag, so the model is only built when an enabled rule queries it.
+/// Inserts the [`VueSemanticModel`] of the analyzed file and its
+/// [`VueNodes`] into the service bag, so the model is only built when an
+/// enabled rule queries it.
 struct VueSemanticModelBuilderVisitor;
 
 impl Visitor for VueSemanticModelBuilderVisitor {
@@ -93,7 +112,11 @@ impl Visitor for VueSemanticModelBuilderVisitor {
     fn start(&mut self, ctx: VisitorStartContext<HtmlLanguage>) {
         if ctx.services.get_service::<VueSemanticModel>().is_none() {
             let model = model_from_services(ctx.root, ctx.services).unwrap_or_default();
+            let nodes = VueNodes {
+                nodes: Rc::new(model.html_nodes(ctx.tree())),
+            };
             ctx.services.insert_service(model);
+            ctx.services.insert_service(nodes);
         }
     }
 
@@ -127,16 +150,94 @@ fn model_from_services(root: &HtmlRoot, services: &ServiceBag) -> Option<VueSema
     Some(vue_model_from_source(db, file).clone())
 }
 
+/// The syntax nodes of the analyzed document that rows of the Vue model stand
+/// for, indexed by [`HtmlNodeId`].
+///
+/// The table is filled once, when the analyzer starts on the document, so
+/// finding a node is an index into it.
+#[derive(Clone, Debug)]
+pub struct VueNodes {
+    nodes: Rc<Nodes<HtmlLanguage>>,
+}
+
+impl VueNodes {
+    /// Returns the node `row` stands for, or `None` when the model has no
+    /// node for it in the analyzed document.
+    pub fn node<R: VueRow>(&self, row: &R) -> Option<R::Node> {
+        R::cast(self.nodes.get(row.html_node())?.clone())
+    }
+}
+
+/// A row of the Vue model that stands for a syntax node of the host document.
+pub trait VueRow {
+    type Node;
+
+    /// The id of the node.
+    fn html_node(&self) -> HtmlNodeId;
+
+    /// Converts the node of the row to [`Self::Node`].
+    fn cast(node: HtmlSyntaxNode) -> Option<Self::Node>;
+}
+
+/// An id the model gives for a node, such as [`Element::html_node`].
+impl VueRow for HtmlNodeId {
+    type Node = HtmlSyntaxNode;
+
+    fn html_node(&self) -> HtmlNodeId {
+        *self
+    }
+
+    fn cast(node: HtmlSyntaxNode) -> Option<Self::Node> {
+        Some(node)
+    }
+}
+
+impl VueRow for Element {
+    type Node = AnyVueElementNode;
+
+    fn html_node(&self) -> HtmlNodeId {
+        Self::html_node(self)
+    }
+
+    fn cast(node: HtmlSyntaxNode) -> Option<Self::Node> {
+        AnyVueElementNode::cast(node)
+    }
+}
+
+impl VueRow for Attr {
+    type Node = AnyHtmlAttribute;
+
+    fn html_node(&self) -> HtmlNodeId {
+        Self::html_node(self)
+    }
+
+    fn cast(node: HtmlSyntaxNode) -> Option<Self::Node> {
+        AnyHtmlAttribute::cast(node)
+    }
+}
+
+declare_node_union! {
+    /// An element of the host document: `<div></div>` or `<div />`.
+    pub AnyVueElementNode = HtmlElement | HtmlSelfClosingElement
+}
+
 #[cfg(test)]
 mod tests {
-    use super::model_from_services;
-    use biome_analyze::ServiceBag;
+    use super::{VueNodes, VueSemanticModelBuilderVisitor, model_from_services};
+    use biome_analyze::{
+        AnalyzerContext, AnalyzerOptions, AnalyzerSignal, MatchQueryParams, Phases, QueryMatcher,
+        ServiceBag, Visitor, VisitorContext, VisitorStartContext,
+    };
     use biome_db::Source;
     use biome_html_parser::{HtmlParserOptions, parse_html};
-    use biome_html_syntax::HtmlRoot;
+    use biome_html_syntax::{HtmlLanguage, HtmlRoot, HtmlSyntaxNode};
     use biome_languages::{DocumentFileSource, HtmlFileSource, LanguageDb};
     use biome_parser::db::{ParseDb, SourceExt, SourceOutput};
+    use biome_rowan::{AstNode, WalkEvent};
+    use biome_vue_semantic::VueSemanticModel;
     use camino::{Utf8Path, Utf8PathBuf};
+    use std::cell::RefCell;
+    use std::ops::{ControlFlow, Deref};
     use std::rc::Rc;
     use std::sync::OnceLock;
 
@@ -217,5 +318,73 @@ mod tests {
     fn no_model_outside_vue_files() {
         let (services, root) = services(HtmlFileSource::html());
         assert!(model_from_services(&root, &services).is_none());
+    }
+
+    /// Reads the node of each element and attribute of the model through
+    /// [`VueNodes`], as a rule does.
+    struct NodeProbe<'a> {
+        nodes: &'a RefCell<Vec<String>>,
+    }
+
+    impl Visitor for NodeProbe<'_> {
+        type Language = HtmlLanguage;
+
+        fn start(&mut self, ctx: VisitorStartContext<HtmlLanguage>) {
+            let model: &VueSemanticModel = ctx.services.get_service().expect("a model");
+            let nodes: &VueNodes = ctx.services.get_service().expect("the nodes");
+            for element in model.elements() {
+                let node = nodes.node(&element).expect("an element node");
+                assert_eq!(node.range(), element.range());
+                self.nodes
+                    .borrow_mut()
+                    .push(node.syntax().text_trimmed().to_string());
+                for attr in element.attrs() {
+                    let node = nodes.node(&attr).expect("an attribute node");
+                    self.nodes
+                        .borrow_mut()
+                        .push(node.syntax().text_trimmed().to_string());
+                }
+            }
+        }
+
+        fn visit(&mut self, _: &WalkEvent<HtmlSyntaxNode>, _: VisitorContext<HtmlLanguage>) {}
+    }
+
+    struct NoMatcher;
+
+    impl QueryMatcher<HtmlLanguage> for NoMatcher {
+        fn match_query(&mut self, _: MatchQueryParams<HtmlLanguage>) {}
+    }
+
+    #[test]
+    fn rows_resolve_to_nodes_of_the_analyzed_document() {
+        let (services, root) = services(HtmlFileSource::vue());
+        let found = RefCell::new(Vec::new());
+        let mut emit = |_: &dyn AnalyzerSignal<HtmlLanguage>| ControlFlow::<()>::Continue(());
+        let mut analyzer = biome_analyze::Analyzer::new(
+            crate::METADATA.deref(),
+            NoMatcher,
+            Box::new(crate::HtmlSuppression),
+            Box::new(crate::suppression_action::HtmlSuppressionAction),
+            &mut emit,
+        );
+        analyzer.add_visitor(Phases::Syntax, Box::new(VueSemanticModelBuilderVisitor));
+        analyzer.add_visitor(Phases::Semantic, Box::new(NodeProbe { nodes: &found }));
+        analyzer.run(AnalyzerContext {
+            root,
+            services,
+            range: None,
+            options: &AnalyzerOptions::default(),
+        });
+        assert_eq!(
+            found.into_inner(),
+            [
+                SOURCE.trim_end(),
+                r#"<div v-if="ok"><span /></div>"#,
+                r#"v-if="ok""#,
+                "<span />",
+            ]
+            .map(String::from)
+        );
     }
 }
